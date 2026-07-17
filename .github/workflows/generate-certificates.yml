@@ -1,0 +1,118 @@
+name: Generate Certificates
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'data/**'
+      - 'templates/**'
+  workflow_dispatch:
+    inputs:
+      data_file:
+        description: 'Data file to use (relative to repository root)'
+        required: false
+        default: 'data/participants.csv'
+      verification_url:
+        description: 'Base URL for certificate verification'
+        required: false
+        default: 'https://example.com/verify?id='
+
+jobs:
+  generate-certificates:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Check for template
+      id: check-template
+      run: |
+        if [ ! -f "templates/certificate_template.png" ]; then
+          echo "template_exists=false" >> $GITHUB_OUTPUT
+        else
+          echo "template_exists=true" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Create certificate template
+      if: steps.check-template.outputs.template_exists == 'false'
+      run: |
+        python create_template.py
+    
+    - name: Determine data file
+      id: data-file
+      run: |
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          echo "path=${{ github.event.inputs.data_file }}" >> $GITHUB_OUTPUT
+        else
+          # Find the most recently modified data file
+          DATA_FILE=$(find data -name "*.csv" -o -name "*.json" | head -n 1)
+          if [ -z "$DATA_FILE" ]; then
+            DATA_FILE="data/participants.csv"
+          fi
+          echo "path=$DATA_FILE" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Generate certificates
+      run: |
+        VERIFICATION_URL="${{ github.event.inputs.verification_url }}"
+        if [ -z "$VERIFICATION_URL" ]; then
+          VERIFICATION_URL="https://example.com/verify?id="
+        fi
+        
+        python generate_certificates.py \
+          --template templates/certificate_template.png \
+          --data "${{ steps.data-file.outputs.path }}" \
+          --output output \
+          --verification-url "$VERIFICATION_URL"
+    
+    - name: List generated certificates
+      run: |
+        echo "Generated certificates:"
+        ls -lh output/
+    
+    - name: Upload certificates as artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: certificates-${{ github.run_number }}
+        path: output/*.png
+        retention-days: 30
+    
+    - name: Create release (optional)
+      if: github.event_name == 'workflow_dispatch'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: certificates-${{ github.run_number }}
+        name: Certificates Batch ${{ github.run_number }}
+        files: output/*.png
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Summary
+      run: |
+        CERT_COUNT=$(ls -1 output/*.png 2>/dev/null | wc -l)
+        echo "## Certificate Generation Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Successfully generated **$CERT_COUNT** certificate(s)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Details" >> $GITHUB_STEP_SUMMARY
+        echo "- **Data file**: ${{ steps.data-file.outputs.path }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Template**: templates/certificate_template.png" >> $GITHUB_STEP_SUMMARY
+        echo "- **Output directory**: output/" >> $GITHUB_STEP_SUMMARY
+        echo "- **Run number**: ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "📦 Certificates are available as artifacts in this workflow run." >> $GITHUB_STEP_SUMMARY
