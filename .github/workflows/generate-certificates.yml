@@ -1,4 +1,4 @@
-name: Generate Certificates
+name: Generate Certificates with QR Codes
 
 on:
   push:
@@ -17,6 +17,14 @@ on:
         description: 'Base URL for certificate verification'
         required: false
         default: 'https://example.com/verify?id='
+      course_name:
+        description: 'Course name (if not in data file)'
+        required: false
+        default: 'Course Completion'
+      use_config:
+        description: 'Use config.json for positioning'
+        required: false
+        default: 'true'
 
 jobs:
   generate-certificates:
@@ -65,54 +73,117 @@ jobs:
           echo "path=$DATA_FILE" >> $GITHUB_OUTPUT
         fi
     
-    - name: Generate certificates
+    - name: Validate data file
+      run: |
+        if [ ! -f "${{ steps.data-file.outputs.path }}" ]; then
+          echo "Error: Data file not found: ${{ steps.data-file.outputs.path }}"
+          exit 1
+        fi
+        echo "Using data file: ${{ steps.data-file.outputs.path }}"
+        echo "File contents preview:"
+        head -n 5 "${{ steps.data-file.outputs.path }}"
+    
+    - name: Generate certificates with QR codes
+      id: generate
       run: |
         VERIFICATION_URL="${{ github.event.inputs.verification_url }}"
         if [ -z "$VERIFICATION_URL" ]; then
           VERIFICATION_URL="https://example.com/verify?id="
         fi
         
-        python generate_certificates.py \
+        COURSE_NAME="${{ github.event.inputs.course_name }}"
+        if [ -z "$COURSE_NAME" ]; then
+          COURSE_NAME="Course Completion"
+        fi
+        
+        USE_CONFIG="${{ github.event.inputs.use_config }}"
+        if [ -z "$USE_CONFIG" ]; then
+          USE_CONFIG="true"
+        fi
+        
+        # Build command
+        CMD="python generate_certificates.py \
           --template templates/certificate_template.png \
-          --data "${{ steps.data-file.outputs.path }}" \
+          --data \"${{ steps.data-file.outputs.path }}\" \
           --output output \
-          --verification-url "$VERIFICATION_URL"
+          --verification-url \"$VERIFICATION_URL\" \
+          --course \"$COURSE_NAME\""
+        
+        # Add config if it exists and use_config is true
+        if [ -f "config.json" ] && [ "$USE_CONFIG" == "true" ]; then
+          CMD="$CMD --config config.json"
+        fi
+        
+        echo "Running: $CMD"
+        eval $CMD
     
     - name: List generated certificates
       run: |
         echo "Generated certificates:"
         ls -lh output/
+        echo ""
+        echo "Total certificates: $(ls -1 output/*.png 2>/dev/null | wc -l)"
+    
+    - name: Create certificates summary
+      run: |
+        CERT_COUNT=$(ls -1 output/*.png 2>/dev/null | wc -l)
+        
+        echo "# Certificate Generation Summary 🎓" >> summary.md
+        echo "" >> summary.md
+        echo "✅ Successfully generated **$CERT_COUNT** certificate(s) with QR codes" >> summary.md
+        echo "" >> summary.md
+        echo "## Details" >> summary.md
+        echo "" >> summary.md
+        echo "| Property | Value |" >> summary.md
+        echo "|----------|-------|" >> summary.md
+        echo "| Data file | \`${{ steps.data-file.outputs.path }}\` |" >> summary.md
+        echo "| Template | \`templates/certificate_template.png\` |" >> summary.md
+        echo "| Output directory | \`output/\` |" >> summary.md
+        echo "| Run number | ${{ github.run_number }} |" >> summary.md
+        echo "| Date | $(date '+%Y-%m-%d %H:%M:%S UTC') |" >> summary.md
+        echo "" >> summary.md
+        echo "## Generated Certificates" >> summary.md
+        echo "" >> summary.md
+        for cert in output/*.png; do
+          if [ -f "$cert" ]; then
+            filename=$(basename "$cert")
+            size=$(du -h "$cert" | cut -f1)
+            echo "- 📜 \`$filename\` ($size)" >> summary.md
+          fi
+        done
+        echo "" >> summary.md
+        echo "## QR Code Information" >> summary.md
+        echo "" >> summary.md
+        echo "Each certificate includes a QR code containing:" >> summary.md
+        echo "- Certificate ID (unique identifier)" >> summary.md
+        echo "- Participant name" >> summary.md
+        echo "- Course name" >> summary.md
+        echo "- Score and grade" >> summary.md
+        echo "- Issue date" >> summary.md
+        echo "- Verification URL" >> summary.md
+        echo "" >> summary.md
+        echo "📱 Scan the QR code with any smartphone to verify certificate authenticity." >> summary.md
+        
+        cat summary.md >> $GITHUB_STEP_SUMMARY
     
     - name: Upload certificates as artifacts
       uses: actions/upload-artifact@v4
       with:
         name: certificates-${{ github.run_number }}
-        path: output/*.png
-        retention-days: 30
+        path: |
+          output/*.png
+          summary.md
+        retention-days: 90
     
-    - name: Create release (optional)
+    - name: Create release with certificates
       if: github.event_name == 'workflow_dispatch'
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: certificates-${{ github.run_number }}
-        name: Certificates Batch ${{ github.run_number }}
+        tag_name: certificates-v${{ github.run_number }}
+        name: 📜 Certificates Batch ${{ github.run_number }}
+        body_path: summary.md
         files: output/*.png
         draft: false
         prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    
-    - name: Summary
-      run: |
-        CERT_COUNT=$(ls -1 output/*.png 2>/dev/null | wc -l)
-        echo "## Certificate Generation Summary" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "✅ Successfully generated **$CERT_COUNT** certificate(s)" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Details" >> $GITHUB_STEP_SUMMARY
-        echo "- **Data file**: ${{ steps.data-file.outputs.path }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Template**: templates/certificate_template.png" >> $GITHUB_STEP_SUMMARY
-        echo "- **Output directory**: output/" >> $GITHUB_STEP_SUMMARY
-        echo "- **Run number**: ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "📦 Certificates are available as artifacts in this workflow run." >> $GITHUB_STEP_SUMMARY

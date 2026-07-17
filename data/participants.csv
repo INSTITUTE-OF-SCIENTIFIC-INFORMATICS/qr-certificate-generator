@@ -1,6 +1,2 @@
-name,id,course,date,achievement,email
-John Doe,CERT001,Introduction to Python Programming,2026-07-15,Excellent,john.doe@example.com
-Jane Smith,CERT002,Advanced Web Development,2026-07-15,Outstanding,jane.smith@example.com
-Michael Johnson,CERT003,Data Science Fundamentals,2026-07-15,Excellent,michael.j@example.com
-Emily Williams,CERT004,Machine Learning Basics,2026-07-15,Very Good,emily.w@example.com
-David Brown,CERT005,Cloud Computing Essentials,2026-07-15,Excellent,david.brown@example.com
+Name,Course Assignments,Practical Modules,Final Assignment,Final Presentation,Total Marks
+Anu Gamage,20/25,20/25,20/25,20/25,80/100

@@ -2,12 +2,15 @@
 """
 QR Code Certificate Generator
 Generates personalized certificates with QR codes for verification
+Supports marksheet format with scores and automatic grade calculation
 """
 
 import os
 import csv
 import json
 import qrcode
+import hashlib
+import re
 from PIL import Image, ImageDraw, ImageFont
 from datetime import datetime
 import argparse
@@ -16,7 +19,7 @@ import argparse
 class CertificateGenerator:
     """Generate certificates with QR codes"""
     
-    def __init__(self, template_path, output_dir="output", verification_url=None):
+    def __init__(self, template_path, output_dir="output", verification_url=None, config_path=None):
         """
         Initialize the certificate generator
         
@@ -24,13 +27,68 @@ class CertificateGenerator:
             template_path: Path to the certificate template image
             output_dir: Directory to save generated certificates
             verification_url: Base URL for certificate verification
+            config_path: Path to configuration JSON file
         """
         self.template_path = template_path
         self.output_dir = output_dir
         self.verification_url = verification_url or "https://example.com/verify?id="
         
+        # Load configuration if provided
+        self.config = self.load_config(config_path) if config_path and os.path.exists(config_path) else None
+        
         # Create output directory if it doesn't exist
         os.makedirs(self.output_dir, exist_ok=True)
+    
+    def load_config(self, config_path):
+        """Load configuration from JSON file"""
+        try:
+            with open(config_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Warning: Could not load config: {e}")
+            return None
+    
+    def parse_score(self, score_str):
+        """
+        Parse score from string format like '20/25' or '80/100'
+        Returns tuple (scored, total)
+        """
+        if not score_str or isinstance(score_str, (int, float)):
+            return None, None
+        
+        match = re.match(r'(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)', str(score_str).strip())
+        if match:
+            return float(match.group(1)), float(match.group(2))
+        return None, None
+    
+    def calculate_grade(self, percentage):
+        """Calculate letter grade from percentage"""
+        if percentage >= 90:
+            return 'A+'
+        elif percentage >= 85:
+            return 'A'
+        elif percentage >= 80:
+            return 'A-'
+        elif percentage >= 75:
+            return 'B+'
+        elif percentage >= 70:
+            return 'B'
+        elif percentage >= 65:
+            return 'B-'
+        elif percentage >= 60:
+            return 'C+'
+        elif percentage >= 55:
+            return 'C'
+        elif percentage >= 50:
+            return 'C-'
+        else:
+            return 'F'
+    
+    def generate_certificate_id(self, name, course=""):
+        """Generate unique certificate ID based on name and course"""
+        data = f"{name}-{course}-{datetime.now().year}".encode('utf-8')
+        hash_obj = hashlib.sha256(data)
+        return f"CERT-{hash_obj.hexdigest()[:8].upper()}"
         
     def generate_qr_code(self, data, size=(200, 200)):
         """
@@ -83,8 +141,7 @@ class CertificateGenerator:
         
         Args:
             participant_data: Dictionary containing participant information
-                Required keys: name, id
-                Optional keys: course, date, achievement, email
+                Can include: name, scores, course assignments, etc.
         """
         # Load template
         certificate = Image.open(self.template_path).convert("RGBA")
@@ -93,34 +150,113 @@ class CertificateGenerator:
         # Get certificate dimensions
         width, height = certificate.size
         
-        # Extract participant data
-        name = participant_data.get('name', 'Participant')
-        cert_id = participant_data.get('id', 'CERT001')
-        course = participant_data.get('course', 'Course Completion')
-        date = participant_data.get('date', datetime.now().strftime('%Y-%m-%d'))
-        achievement = participant_data.get('achievement', '')
-        email = participant_data.get('email', '')
+        # Extract and process participant data
+        name = participant_data.get('Name', participant_data.get('name', 'Participant'))
         
-        # Generate QR code with verification URL
+        # Parse marksheet data if present
+        course_assignments = participant_data.get('Course Assignments', '')
+        practical_modules = participant_data.get('Practical Modules', '')
+        final_assignment = participant_data.get('Final Assignment', '')
+        final_presentation = participant_data.get('Final Presentation', '')
+        total_marks = participant_data.get('Total Marks', '')
+        
+        # Parse total marks
+        scored, total = self.parse_score(total_marks)
+        if scored is not None and total is not None:
+            percentage = (scored / total) * 100
+            grade = self.calculate_grade(percentage)
+        else:
+            # Fallback to provided values
+            percentage = participant_data.get('score', participant_data.get('percentage', 0))
+            grade = participant_data.get('grade', 'N/A')
+        
+        # Generate certificate ID
+        course = participant_data.get('course', participant_data.get('Course', 'Course Completion'))
+        cert_id = participant_data.get('id', self.generate_certificate_id(name, course))
+        
+        date = participant_data.get('date', datetime.now().strftime('%Y-%m-%d'))
+        
+        # Generate QR code with all verification data
         qr_data = json.dumps({
             'id': cert_id,
             'name': name,
             'course': course,
             'date': date,
+            'score': f"{scored}/{total}" if scored else str(percentage),
+            'grade': grade,
+            'percentage': round(percentage, 2) if isinstance(percentage, (int, float)) else percentage,
             'verification_url': f"{self.verification_url}{cert_id}"
-        })
-        qr_code = self.generate_qr_code(qr_data, size=(250, 250))
+        }, indent=2)
         
-        # Position QR code (bottom right)
-        qr_position = (width - 300, height - 300)
-        certificate.paste(qr_code, qr_position)
+        # Get QR code size and position from config or use defaults
+        if self.config and 'qr_code' in self.config:
+            qr_size = self.config['qr_code'].get('size', 250)
+            qr_x = self.config['qr_code'].get('x', width - 300)
+            qr_y = self.config['qr_code'].get('y', height - 300)
+        else:
+            qr_size = 250
+            qr_x = width - 300
+            qr_y = height - 300
         
-        # Add text to certificate
+        qr_code = self.generate_qr_code(qr_data, size=(qr_size, qr_size))
+        certificate.paste(qr_code, (qr_x, qr_y))
+        
+        # Add text to certificate using config or defaults
+        if self.config and 'text_elements' in self.config:
+            self.add_text_from_config(draw, {
+                'name': name,
+                'course': course,
+                'date': date,
+                'score': round(percentage, 2) if isinstance(percentage, (int, float)) else percentage,
+                'grade': grade,
+                'certificate_id': cert_id
+            })
+        else:
+            # Use default positioning
+            self.add_default_text(draw, name, course, date, percentage, grade, cert_id, width, height)
+        
+        # Save certificate
+        safe_name = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in name)
+        output_filename = f"certificate_{safe_name}_{cert_id}.png"
+        output_path = os.path.join(self.output_dir, output_filename)
+        certificate.convert("RGB").save(output_path, "PNG", dpi=(300, 300))
+        
+        print(f"✓ Generated certificate for {name} (ID: {cert_id}, Score: {percentage:.1f}%, Grade: {grade})")
+        return output_path
+    
+    def add_text_from_config(self, draw, data):
+        """Add text elements based on configuration"""
+        for element_name, element_config in self.config['text_elements'].items():
+            if element_name not in data:
+                continue
+            
+            value = data[element_name]
+            prefix = element_config.get('prefix', '')
+            suffix = element_config.get('suffix', '')
+            text = f"{prefix}{value}{suffix}"
+            
+            font_size = element_config.get('font_size', 30)
+            font = self.get_font(font_size)
+            color = element_config.get('font_color', '#000000')
+            
+            x = element_config.get('x', 0)
+            y = element_config.get('y', 0)
+            align = element_config.get('align', 'left')
+            
+            if align == 'center':
+                bbox = draw.textbbox((0, 0), text, font=font)
+                text_width = bbox[2] - bbox[0]
+                x = x - text_width // 2
+            
+            draw.text((x, y), text, fill=color, font=font)
+    
+    def add_default_text(self, draw, name, course, date, percentage, grade, cert_id, width, height):
+        """Add text elements using default positioning"""
         # Participant name (centered, large)
         name_font = self.get_font(80)
         name_bbox = draw.textbbox((0, 0), name, font=name_font)
         name_width = name_bbox[2] - name_bbox[0]
-        name_position = ((width - name_width) // 2, height // 2 - 50)
+        name_position = ((width - name_width) // 2, height // 2 - 150)
         draw.text(name_position, name, fill='#1a1a1a', font=name_font)
         
         # Course name (centered)
@@ -128,8 +264,19 @@ class CertificateGenerator:
         course_text = f"for completing {course}"
         course_bbox = draw.textbbox((0, 0), course_text, font=course_font)
         course_width = course_bbox[2] - course_bbox[0]
-        course_position = ((width - course_width) // 2, height // 2 + 80)
+        course_position = ((width - course_width) // 2, height // 2 - 30)
         draw.text(course_position, course_text, fill='#4a4a4a', font=course_font)
+        
+        # Score and Grade (centered)
+        score_font = self.get_font(50)
+        if isinstance(percentage, (int, float)):
+            score_text = f"Score: {percentage:.1f}%  |  Grade: {grade}"
+        else:
+            score_text = f"Grade: {grade}"
+        score_bbox = draw.textbbox((0, 0), score_text, font=score_font)
+        score_width = score_bbox[2] - score_bbox[0]
+        score_position = ((width - score_width) // 2, height // 2 + 70)
+        draw.text(score_position, score_text, fill='#2c3e50', font=score_font)
         
         # Date (centered)
         date_font = self.get_font(30)
@@ -143,13 +290,6 @@ class CertificateGenerator:
         id_font = self.get_font(20)
         id_text = f"Certificate ID: {cert_id}"
         draw.text((50, height - 80), id_text, fill='#8a8a8a', font=id_font)
-        
-        # Save certificate
-        output_path = os.path.join(self.output_dir, f"certificate_{cert_id}.png")
-        certificate.convert("RGB").save(output_path, "PNG")
-        
-        print(f"✓ Generated certificate for {name} (ID: {cert_id})")
-        return output_path
     
     def generate_from_csv(self, csv_path):
         """
@@ -204,12 +344,14 @@ class CertificateGenerator:
 
 def main():
     """Main entry point"""
-    parser = argparse.ArgumentParser(description='Generate certificates with QR codes')
+    parser = argparse.ArgumentParser(description='Generate certificates with QR codes from marksheet data')
     parser.add_argument('--template', required=True, help='Path to certificate template image')
     parser.add_argument('--data', required=True, help='Path to participant data (CSV or JSON)')
     parser.add_argument('--output', default='output', help='Output directory for certificates')
     parser.add_argument('--verification-url', default='https://example.com/verify?id=',
                         help='Base URL for certificate verification')
+    parser.add_argument('--config', help='Path to configuration JSON file (optional)')
+    parser.add_argument('--course', default='Course Completion', help='Course name (optional, used if not in data)')
     
     args = parser.parse_args()
     
@@ -217,7 +359,8 @@ def main():
     generator = CertificateGenerator(
         template_path=args.template,
         output_dir=args.output,
-        verification_url=args.verification_url
+        verification_url=args.verification_url,
+        config_path=args.config
     )
     
     # Generate certificates based on file type
